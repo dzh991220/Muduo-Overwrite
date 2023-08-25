@@ -52,702 +52,693 @@ muduo采用了和Nginx相似的操作，有一个main reactor通过accept组件�
 
 ![在这里插入图片描述](https://img-blog.csdnimg.cn/20210214111718808.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NoZW5taW5neHVlSVQ=,size_16,color_FFFFFF,t_70)
 
-# muduo各个类
-明白了muduo的细节之后，我们对muduo的剖析就更为容易。
+三大组件：
+channel
 
-## 辅助类
-这个类别的类与网络实现没有太大关系，只是用来辅助网络库的实现了
+封装sockfd和event，还绑定Poller返回的具体事件，因此类中包含sockfd、events、revents成员，Channel通过EventLoop来和Poller交互，因此也包括EventLoop成员。定义如下（省略部分不重要代码）：
 
-### NonCopyable
-这个类将拷贝和赋值构造函数给delete掉，提供了一个**不可拷贝**的基类
-
-```cpp
-    NonCopyable(const NonCopyable &) = delete;
-    NonCopyable &operator=(const NonCopyable &) = delete;
-```
-### TimeStamp
-这个类用于给网络库提供系统时间，我这里用的是`time（nullptr）`函数
-
-```cpp
-    TimeStamp();
-    explicit TimeStamp(int64_t times);
-    //获取当前时间
-    static TimeStamp now();
-    //转换为字符串
-    string to_string();
-```
-### Logger
-这个是日志类,采用的是饿汉式的单例模式，用于打印网络库运行过程中的日志信息，主要分为四个级别
-
-- INFO:	正常的日志输出
-- ERROR:	有错误的日志输出，但是程序还可以运行
-- FATAL:	有错误的日志输出，程序不可运行，直接exit
-- DEBUG:	用于调试得到错误信息
-
-同时也往外提供了四个宏函数用于打印信息：`LOG_INFO、 LOG_ERROR、LOG_FATAL、LOG_DEBUG`，由于四个函数相似度较大，我这里就放出一个函数LOG_INFO
-```cpp
-#define LOG_INFO(logmsgFormat, ...)                       \
-    do                                                    \
-    {                                                     \
-        Logger &logger = Logger::instance();              \
-        logger.set_log_level(EnLogLevel::INFO);           \
-        char buf[BUFFER_SIZE] = {0};                      \
-        snprintf(buf, 1024, logmsgFormat, ##__VA_ARGS__); \
-        logger.log(buf);                                  \
-    } while (0)
-```
-我们可以看到，这里是对输入数据进行了处理然后调的logger的log函数进行打印。
-
-```cpp
-    //获取唯一实例对象
-    static Logger &instance();
-
-    //设置日志级别
-    void set_log_level(EnLogLevel level);
-
-    //写日志
-    void log(string msg);
-```
-### Buffer
-这个是muduo网络库中底层的数据缓冲类型，模仿java中netty的设计，其有一个prepend、read、write三个标志，划分了缓冲区的数据。
-其中perpend-read之间是一个头部的标志位，read-write是可读数据，write-末尾是可写数据。
-
-应用将数据写入到网络库的Buffer缓冲区，然后Buffer缓冲区再写到TCP的缓冲区，最后再发送。
-
-![在这里插入图片描述](https://img-blog.csdnimg.cn/20210214125729501.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NoZW5taW5neHVlSVQ=,size_16,color_FFFFFF,t_70)
-
-```cpp
-数据：
-    vector<char> buffer_;
-    size_t read_index_;
-    size_t write_index_;
-方法：
-    //返回可读的长度
-    size_t readable_bytes() ;
-    //返回可写的长度
-    size_t wirteable_bytes();
-    //返回头长度
-    size_t prependable_bytes();
-    //返回缓冲区中可读数据的起始地址
-    const char *peek();
-    //缓冲区readindex 偏移
-    void retrieve(size_t len);
-    //缓冲区复位
-    void retrieve_all();
-    //读取所有数据
-    string retrieve_all_asString();
-    //读取len长度数据
-    string retrieve_as_string(size_t len);
-    //保证缓冲区有这么长的可写空间
-    void ensure_writeable_bytes(size_t len);
-    //返回可写数据地址
-    char *begin_write();
-    //忘缓冲区中添加数据
-    void append(const char *data, size_t len);
-    //从fd中读取数据
-    ssize_t readfd(int fd, int *save_errno);
-    //通过fd发送数据
-    ssize_t writefd(int fd, int *save_errno);
-private:
-    //返回缓冲区起始地址
-    char *begin();
-    //扩容函数
-    void makespace(size_t len);
-```
-## Reactor中类
-这个类别中主要讲解reactor中要实现的类
-### InetAddress
-这个类封装了socket所要绑定的**ip地址**和**端口号**，比较简单
-
-```cpp
-    string get_ip() const;
-    string get_ip_port() const;
-    uint16_t get_port() const;
-
-    void set_sockaddr(const sockaddr_in &addr) { addr_ = addr; }
-    const sockaddr_in *get_sockaddr() const { return &addr_; }
-```
-### Channel
-这个类中主要是封装了sockfd及其所感兴趣的事件，还有发生事件所要调用的回调函数。
-
-```cpp
-数据：
-    EventLoop *loop_;	//所属loop
-    const int fd_;
-    int events_;      //fd感兴趣事件
-    int real_events_; //poller 具体发生的事件
-    int index_;
-
-    weak_ptr<void> tie_; //观察当前channel的存在状态
-    bool tied_;          //判断tie_是否绑定过
-
-    //发生事件所要调用的具体事件的回调操作
-    ReadEventCallback read_callback_;
-    EventCallback write_callback_;
-    EventCallback close_callback_;
- 方法：
-     //fd得到poller通知以后，根据具体发生的事件，调用相应的回调
-     //其实调用的handle_event_withGuard
-    void handle_event(TimeStamp receive_time);
-    //防止channel被remove掉，channel还在执行回调
-    //一个tcpconnection新连接创建的时候，调用tie
-    void tie(const shared_ptr<void> &);
-    //得到socket套接字
-    int get_fd();
-    //得到感兴趣事件
-    int get_events();
-    //设置真正发生的事件,poller监听到事件然后设置real_event
-    int set_revent(int event);
-    //判断该fd是否设置过感兴趣事件
-    bool is_noneEvent();
-    //返回所属eventloop
-    EventLoop *owner_loop();
-    //在channel所属的eventloop中删除自己
-    void remove();
-public:
-    //设置fd感兴趣事件
-    void enable_reading();
-    void dis_enable_reading();
-    void enable_writing();
-    void dis_enable_writing();
-    void dis_enable_all();
-public:
-    //返回fd当前感兴趣事件状态
-    bool is_none_event();
-    bool is_writting();
-    bool is_reading();
-public:
-    //设置发生不同事件的回调操作
-	......
-private:
-    //与poller更新fd所感兴趣事件
-    void update();
-    //根据发生的具体事件调用相应的回调操作
-    void handle_event_withGuard(TimeStamp receive_time);
-```
-### EpollPoller
-这个封装了epoll，也就是底层的demultiplex（多路事件分发），里面包含了一个指向Channel的指针，以及自己在内核事件表中的fd
-
-```cpp
-数据：
-    int epollfd_;
-    //key: fd  value:fd所属channel
-    ChannelMap channels_;		//unordered_map<int, Channel *>;
-方法：
-	//调用epoll_wait，并将发生事件的channel填写到形参active_channel中
-	TimeStamp poll(int timeout, ChannelList *active_channels) override;
-	//往channel_map中添加channel
-    void update_channel(Channel *channel);
-    //channel_map中删除channel
-    void remove_channel(Channel *channel);
-private:
-    //填写活跃的链接
-    void fill_active_channels(int events_num, ChannelList *active_channels) const;
-    //更新channel，调用epoll_ctl
-    void update(int operation, Channel *channel);
-```
-### EventLoop
-这个是事件循环类，主要包含两个组件 ----- Poller以及Channel。
-
-```cpp
-数据：
-    atomic_bool looping_;
-    atomic_bool quit_; //标志退出loop循环
-
-    const pid_t threadId_;       //记录当前loop所在线程id
-    TimeStamp poll_return_time_; //poller返回的发生事件的时间点
-    unique_ptr<Poller> poller_;
-
-    int wakeup_fd;                       //当main loop获取一个新用户的channel，通过轮询算法，选择一个subloopp，通过该成员唤醒subloop，处理channel
-    unique_ptr<Channel> wakeup_channel_; //包装wakefd
-
-    ChannelList active_channels; //eventloop 所管理的所有channel
-
-    atomic_bool calling_pending_functors_; //标识当前loop是否有需要执行的回调操作
-    vector<Functor> pending_Functors_;     //loop所执行的所有回调操作
-
-    mutex functor_mutex_; //保护pending_functors
-```
-可以看到，其有一个指向Poller的指针，以及一个存储Channel的容器，ChannelList。
-
-值得注意的是，这里还有一个wakeup_fd，这是干什么的呢？
-
-**唤醒** eventloop用的！
-
-试想一下，如果一个eventloop一直处于epoll_wait的阻塞状态，那么我main reactor怎么去给他分配新的连接？我不得叫醒它？
-
-在libevent中也有相似的组件，不过用的是sockpair，相当于在本地创建socket进行通信，而muduo中用的则是更加高效的eventfd（事件驱动，更快，8字节缓冲区，更省）。上层模块通过往eventfd中去写，触发写事件，内核就自然而然的将相应的eventloop唤醒了。
-
-```cpp
-方法：
-    //开启事件循环
-    void loop();
-    //退出事件循环
-    void quit();
-    TimeStamp get_poll_returnTime() const { return poll_return_time_; }
-    //在当前loop中执行cb
-    void run_in_loop(Functor cb);
-    //把cb放入队列中,唤醒loop所在线程执行cb（pending_functor）
-    void queue_in_loop(Functor cb);
-    //唤醒loop所在线程
-    void wakeup();
-    //poller的方法
-    void update_channel(Channel *channel);
-    void remove_channel(Channel *channel);
-    bool has_channel(Channel *channel);
-    //判断eventloop对象是否在自己的线程中
-    bool is_in_loopThread() const;
-private:
-    void handle_read();         //wake up
-    void do_pending_functors(); //执行回调
-```
-现在我们大概对已经介绍的类有了一点眉目了，其实也就是对epoll的一个封装，原来的EpollLoop在epoll_create，注册各个channel之后，就处于epoll_wait处于阻塞状态。如果这个时候，之前的channel没有事件发生，而上层又想唤醒当前的EventLoop去执行新的连接，就调用wakeup，唤醒当前的EventLoop。
-
-### Thread
-这个类，在原来的muduo中使用linux系统调用pthread_create那样写的较为繁琐，这里直接使用了C++ 11的thread类。相对来说，也比较简单了。
-
-```cpp
-数据：
-    bool started_;
-    bool joined_;
-    shared_ptr<thread> thread_;
-
-    pid_t tid_;
-    ThreadFunc function_;
-    string name_;
-方法：
-    void start();
-    void join();
-    bool is_started() const { return started_; }
-    pid_t get_tid() const { return tid_; }
-    const string &get_name() const { return name_; }
-    static int get_thread_nums() { return thread_nums_; }
-private:
-    void set_default_name();
-```
-### EventLoopThread
-都说muduo网络库的核心是**one loop per thread**，即一个线程一个eventloop。其实现的秘密就蕴藏在EventLoopThread类中。
-
-```cpp
-数据：
-    EventLoop *loop_;
-    bool exiting_;
-    Thread thread_;
-    mutex thread_mutex_;
-    condition_variable condition_;
-    ThreadInitCallback callback_function_;
-方法：
-    EventLoopThread(const ThreadInitCallback &cb = ThreadInitCallback(), const string &name = string());
-    ~EventLoopThread();
-    EventLoop *start_loop();
-private:
-    void thread_function();
-```
-是不是很少，秘密藏在哪儿也就能直接看出来吧？
-
-**start_loop 与 thread_function**！
-
-```cpp
-EventLoop *EventLoopThread::start_loop()
+class Channel : noncopyable
 {
-    thread_.start(); //启动线程
+public:
+    using EventCallback = std::function<void()>; // muduo仍使用typedef 两种回调函数
+    using ReadEventCallback = std::function<void(Timestamp)>;
 
-    EventLoop *loop = nullptr;
-    {
-        unique_lock<mutex> lock(thread_mutex_);
-        while (loop_ == nullptr)
-        {
-            condition_.wait(lock);
-        }
-        loop = loop_;
-    }
+    Channel(EventLoop *loop, int fd);
+    ~Channel();
 
-    return loop;
-}
+    // fd得到Poller通知以后 处理事件 handleEvent在EventLoop::loop()中调用
+    void handleEvent(Timestamp receiveTime);
+......
+    void handleEventWithGuard(Timestamp receiveTime);
+......
+    EventLoop *loop_; // 事件循环
+    const int fd_;    // fd，Poller监听的对象
+    int events_;      // 注册fd感兴趣的事件
+    int revents_;     // Poller返回的具体发生的事件，传出参数
+......
+    // 4个回调 因为channel通道里可获知fd最终发生的具体的事件events，所以它负责调用具体事件的回调操作
+    ReadEventCallback readCallback_;
+    EventCallback writeCallback_;
+    EventCallback closeCallback_;
+    EventCallback errorCallback_;
+};
+如上所述故引申出事件回调和设置事件状态函数，4种事件对应4回调函数，经handleEvent调handleEventWithGuard被调用，判断4种不同事件类型调用不同事件回调函数，设置事件状态函数通过loop调用EPollPoller的Channel操作函数，本质是调用epoll_ctl
 
-//启动的线程中执行以下方法
-void EventLoopThread::thread_function()
+void Channel::handleEvent(Timestamp receiveTime)
 {
-    EventLoop loop; //创建一个独立的EventLoop，和上面的线程是一一对应 one loop per thread
-
-    if (callback_function_)
+    if (tied_)
     {
-        callback_function_(&loop);
-    }
-
-    {
-        unique_lock<mutex> lock(thread_mutex_);
-        loop_ = &loop;
-        condition_.notify_one();
-    }
-
-    loop.loop(); //开启事件循环
-
-    //结束事件循环
-    unique_lock<mutex> lock(thread_mutex_);
-    loop_ = nullptr;
-}
-```
-而thread_function是通过初始化列表的方式，绑定在线程所要执行的函数当中。
-
-### EventLoopThreadPool
-这个类，在之前的图中你可以理解为sub reactor池，通过设置thread_nums，可以创建相应数量的sub reactor。
-
-```cpp
-数据：
-	EventLoop *baseloop_;		//main loop
-    string name_;
-    bool started_;
-    int thread_nums_;
-    int next_;
-    vector<unique_ptr<EventLoopThread>> threads_; //所有线程，即所有subReactor
-    vector<EventLoop *> loops_;                   //每个线程里面对应的loop事件循环
-方法：
-    //设定线程数量，一般应该和CPU核心数相同
-    void set_threadNum(int thread_num) ;
-    void start(const ThreadInitCallback &cb = ThreadInitCallback());
-    //如果工作在多线程，baseloop默认轮询方式分配channel给subloop
-    EventLoop *get_nextEventLoop();
-    vector<EventLoop *> get_allLoops();
-    bool get_started() const;
-    string get_name() const;
-```
-## main Reactor
-这个类别则主要是main reactor中实现的类，跟客户端的分发有关。
-
-### Socket
-这个类也是对socket编程的封装，跟channel不同的是，它封装的是socket编程流程，包括bind、listen、accept 以及设置 socket的属性信息等
-
-```cpp
-数据：
-    const int sockfd_;
-方法：
-    int get_fd() { return sockfd_; }
-    void bind_address(const InetAddress &loacladdr);
-    void listen();
-    int accept(InetAddress *peeraddr);
-    void shutdown_write();
-    void set_tcp_noDelay(bool on);
-    void set_reuseAddr(bool on);
-    void set_reusePort(bool on);
-    void set_keepAlive(bool on);
-```
-### Acceptor
-这个组件在上图是特别点出来的，属于main reactor，用于分发客户端连接。
-
-```cpp
-数据：
-    EventLoop *loop_; //acceptor用的用户定义的那个baseloop，也就是mainloop
-    Socket accept_socket_;
-    Channel accept_channel_;
-    NewConnectionCallback new_connetion_callback_;
-    bool listenning_;
-```
-可以看到，它本身也是一个socket，属于listen_fd，用于监听客户端的连接事件。当新用户连接的时候，就会执行它的new_connection_callback。那么这个回调又干了什么呢？
-
-```cpp
-    void set_new_connection_callback(const NewConnectionCallback &cb)
-    {
-        new_connetion_callback_ = cb;
-    }
-```
-阅读源码我们知道，这个是上层给他设置的，也就是TcpServer中。所以说，具体的敢了什么得等会儿才知道。
-
-```cpp
-方法：
-	void set_new_connection_callback(const NewConnectionCallback &cb);
-    bool is_listening();
-    void listen();
- private:
-    void handle_read();
-```
-这里可以着重强调一下handle_read这个函数，它是accept触发读事件所设定的回调函数。
-
-```cpp
-//listenfd 有事件发生，即新用户连接
-void Acceptor::handle_read()
-{
-    InetAddress peeraddr;
-
-    int connfd = accept_socket_.accept(&peeraddr);
-    if (connfd > 0)
-    {
-        if (new_connetion_callback_)
+        std::shared_ptr<void> guard = tie_.lock();
+        if (guard)
         {
-            new_connetion_callback_(connfd, peeraddr); //轮询找到subloop，唤醒，分发当前新客户端的channel
-        }
-        else
-        {
-            close(connfd);
+            handleEventWithGuard(receiveTime);
         }
     }
     else
     {
-        LOG_ERROR("%s : %s :%d accept error : %d!\n", __FILE__, __FUNCTION__, __LINE__, errno);
-        //进程没有可用的fd
-        if (errno == EMFILE)
+        handleEventWithGuard(receiveTime);
+    }
+}
+//4种事件对应的回调函数
+void Channel::handleEventWithGuard(Timestamp receiveTime)
+{
+    LOG_INFO("channel handleEvent revents:%d\n", revents_);
+    // 关闭
+    if ((revents_ & EPOLLHUP) && !(revents_ & EPOLLIN))
+    {
+        if (closeCallback_)
         {
-            LOG_ERROR("%s : %s :%d sockfd reached limit error : %d!\n", __FILE__, __FUNCTION__, __LINE__, errno);
+            closeCallback_();
+        }
+    }
+    // 错误
+    if (revents_ & EPOLLERR)
+    {
+        if (errorCallback_)
+        {
+            errorCallback_();
+        }
+    }
+    // 读
+    if (revents_ & (EPOLLIN | EPOLLPRI))
+    {
+        if (readCallback_)
+        {
+            readCallback_(receiveTime);
+        }
+    }
+    // 写
+    if (revents_ & EPOLLOUT)
+    {
+        if (writeCallback_)
+        {
+            writeCallback_();
         }
     }
 }
-```
-看到了吧，它会将客户端的连接套接字进行一个信息记录，然后将这些信息传递到new_connection_callbak，执行它。所以说，这里执行了接受连接的命令，但是连接的分发还是藏在这个回调函数之中！
-### TcpServer
-这个可以说是整个网络库的入口，为了用于更加方便使用，我将所有头文件都包含在这里了。
 
-```cpp
-数据：
-    EventLoop *loop_;		//用户传进来的loop，也就是mainloop
-    const string ip_port_;
-    const string name_;
-    unique_ptr<Acceptor> acceptor_;               //运行在mainloop，主要是监听新连接事件
-    shared_ptr<EventLoopThreadPool> thread_pool_; //one loop per thread
-    ConnectionCallback connection_callback_;        //有新连接时回调
-    MessageCallback message_callback_;              //有读写消息的回调
-    WriteCompleteCallback write_complete_callback_; //消息发送完以后的回调
-    ThreadInitCallback thread_init_callback_; //loop 线程初始化的回调
-    atomic_int started_;
-    int next_conn_id_;
-    ConnectionMap connections_; //保存所有连接	unordered_map<string, TcpConnectionPtr>;
-```
-可以看到，它大抵上是有这么几个组件，acceptor、eventloopthreadpool、一些回调、以及一个存储channel连接信息的connectionmap。刚刚好和我们一开始就提到的图对应起来了。
+Poller和EPollPoller
 
-```cpp
-    //设置回调
-    void set_thread_init_callback(const ThreadInitCallback &callback);
-    void set_connection_callback(const ConnectionCallback &callback);
-    void set_message_callback(const MessageCallback &callback);
-    void set_write_complete_callback(const WriteCompleteCallback &callback);
-    //设置底层subloop的个数
-    void set_thread_num(int thread_num);
-    //开启服务器监听
-    void start();
+Poller类是虚基类，提供IO复用统一接口：poll、updateChannel、removeChannel。定义ChannelMap和EventLoop类对象
+
+// muduo库中多路事件分发器的核心IO复用模块
+class Poller
+{
+public:
+    using ChannelList = std::vector<Channel *>;
+
+    Poller(EventLoop *loop);
+    virtual ~Poller() = default;
+
+    // 给所有IO复用保留统一的接口
+    virtual Timestamp poll(int timeoutMs, ChannelList *activeChannels) = 0;
+    virtual void updateChannel(Channel *channel) = 0;
+    virtual void removeChannel(Channel *channel) = 0;
+......
+protected:
+    // map的key:sockfd value:sockfd所属的channel通道类型
+    using ChannelMap = std::unordered_map<int, Channel *>;
+    ChannelMap channels_;
 private:
-    void new_connection(int sockfd, const InetAddress &peeraddr);
-    void remove_connection(const TcpConnectionPtr &conn);
-    void remove_connection_inLoop(const TcpConnectionPtr &conn);
-```
-可以看到，最重要的其实就是`start()`以及三个私有函数了。首先来看看start函数做了什么？
+    EventLoop *ownerLoop_; // 定义Poller所属的事件循环EventLoop
+};
 
-```cpp
-//开启服务器监听
+EPollPoller先重写Poller的接口，定义epollfd和EventList成员，表示监听fd和存放epoll_wait返回的事件的fd集合。
+
+class EPollPoller : public Poller
+{
+public:
+    EPollPoller(EventLoop *loop);
+    ~EPollPoller() override;
+
+    // 重写基类Poller的抽象方法
+    Timestamp poll(int timeoutMs, ChannelList *activeChannels) override;
+    void updateChannel(Channel *channel) override;
+    void removeChannel(Channel *channel) override;
+
+private:
+    static const int kInitEventListSize = 16;
+......
+    using EventList = std::vector<epoll_event>; // C++中可以省略struct 直接写epoll_event即可
+    int epollfd_;      // 监听fd，epoll_create创建返回的fd保存在epollfd_中
+    EventList events_; // 用于存放epoll_wait返回的所有发生的事件的文件描述符事件集
+};
+
+poll调epoll_wait，将发生事件文件描述符集合写入EventList，并将发生事件的Channel压入ChannelList对象
+
+Timestamp EPollPoller::poll(int timeoutMs, ChannelList *activeChannels)
+{
+    int numEvents = ::epoll_wait(epollfd_, &*events_.begin(), static_cast<int>(events_.size()), timeoutMs);
+    int saveErrno = errno;
+    Timestamp now(Timestamp::now());
+
+    if (numEvents > 0)
+    {
+        fillActiveChannels(numEvents, activeChannels);
+        if (numEvents == events_.size()) // 扩容操作
+        {
+            events_.resize(events_.size() * 2);
+        }
+    }
+    else if (numEvents == 0)//timeout
+    {
+    }
+    else
+    {
+        if (saveErrno != EINTR)
+        {
+            errno = saveErrno;
+        }
+    }
+    return now;
+}
+// 填写活跃的连接
+void EPollPoller::fillActiveChannels(int numEvents, ChannelList *activeChannels) const
+{
+    for (int i = 0; i < numEvents; ++i)
+    {
+        Channel *channel = static_cast<Channel *>(events_[i].data.ptr);
+        channel->set_revents(events_[i].events);
+        activeChannels->push_back(channel); // EventLoop就拿到了它的Poller给它返回的所有发生事件的channel列表了
+    }
+}
+
+updateChannel经Channel对象调EventLoop对象成员函数被调用，最终调epoll_ctl
+
+removeChannel类似updateChannel，但会将传入参数channel从ChannelMap成员对象中删除
+EventLoop
+
+事件循环可理解为Reactor，一Reactor可处理多sockfd，故一EventLoop对应多Channel，但多Channel不能对应同EventLoop。EventLoop是Channel和Poller的桥梁，因此成员变量包括Channel和Poller对象，及存储上层回调的队列，从而引申出wakeup和handleRead，doPendingFunctors、runInLoop和queueInLoop函数
+
+相关函数时序：
+
+runInLoop->queueInLoop->wakeup->poll->handleRead->doPendingFunctors
+
+主loop收到事件，若不在主线程，则调runInLoop，调用queueInLoop，若再主线程直接调cb，否则将回调给子loop（该回调需子loop执行 但它阻塞在poll处） queueInLoop调wakeup写数据，系统检测到写事件，下次解除epoll_wait的阻塞，完成主从通信。
+
+// 在当前loop中执行cb
+void EventLoop::runInLoop(Functor cb)
+{
+    if (isInLoopThread()) // 单Reactor模型 当前EventLoop中执行回调
+    {
+        cb();
+    }
+    else //多Reactor模型 在非当前EventLoop线程中执行cb，就需要唤醒EventLoop所在线程执行cb
+    {
+        queueInLoop(cb);
+    }
+}
+
+
+queueInLoop将回调添加到队列，同时通过wakeup唤醒poll调用队列内的回调
+
+// 把cb放入队列中 唤醒loop所在的线程执行cb
+void EventLoop::queueInLoop(Functor cb)
+{
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        pendingFunctors_.emplace_back(cb);
+    }
+
+    if (!isInLoopThread() || callingPendingFunctors_)
+    {
+        wakeup(); // 唤醒loop所在线程
+    }
+}
+
+wakeup巧妙，构造函数调eventfd创建可用于等待唤醒的eventfd对象wakeupFd_，每当多Reactor模型时（单Reactor模型直接调cb），将上层回调放入队列时，判断是否非当前EventLoop或当前loop正在执行回调，调wakup唤醒loop所在子线程
+
+// 用来唤醒loop所在线程 向wakeupFd_写一个数据 wakeupChannel就发生读事件 当前loop线程就会被唤醒
+void EventLoop::wakeup()
+{
+    uint64_t one = 1;
+    ssize_t n = write(wakeupFd_, &one, sizeof(one));
+    if (n != sizeof(one))
+    {
+        LOG_ERROR("EventLoop::wakeup() writes %lu bytes instead of 8\n", n);
+    }
+}
+
+handleRead，当wakeup被调用，则wakeupFd_有写数据，此时该回调被调用，下次epoll_wait则检测到事件解除阻塞
+
+void EventLoop::handleRead()
+{
+    uint64_t one = 1;
+    ssize_t n = read(wakeupFd_, &one, sizeof(one));
+    if (n != sizeof(one))
+    {
+        LOG_ERROR("EventLoop::handleRead() reads %lu bytes instead of 8\n", n);
+    }
+}
+
+doPendingFunctors也巧妙，处理挂起事件，先交换后遍历执行 functor，既减少锁的临界区范围又避免死锁（执行functor再临界区时若functor中调用queueInLoop会死锁）
+
+void EventLoop::doPendingFunctors()
+{
+    std::vector<Functor> functors;
+    callingPendingFunctors_ = true;
+
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        functors.swap(pendingFunctors_); // 交换的方式减少了锁的临界区范围 提升效率 同时避免了死锁 如果执行functor()在临界区内 且functor()中调用queueInLoop()就会产生死锁
+    }
+
+    for (const Functor &functor : functors)
+    {
+        functor(); // 执行当前loop需要执行的回调操作
+    }
+    callingPendingFunctors_ = false;
+}
+
+注意quit中设quit_为true要wakeup，因退出循环时，可能阻塞再epoll_wait处，需被唤醒，并执行完剩余回调，下次再退出循环
+
+/**
+ * 1. 如果loop在自己的线程中调用quit成功了 说明当前线程已经执行完毕了loop()函数的poller_->poll并退出
+ * 2. 如果不是当前EventLoop所属线程中调用quit退出EventLoop 需要唤醒EventLoop所属线程的epoll_wait
+ *
+ * 比如在一个subloop(worker)中调用mainloop(IO)的quit时 需要唤醒mainloop(IO)的poller_->poll 让其执行完loop()函数
+ *
+ * ！！！ 注意： 正常情况下 mainloop负责请求连接 将回调写入subloop中 通过生产者消费者模型即可实现线程安全的队列
+ * ！！！       但是muduo通过wakeup()机制 使用eventfd创建的wakeupFd_ notify 使得mainloop和subloop之间能够进行通信
+ **/
+void EventLoop::quit()
+{
+    quit_ = true;
+
+    if (!isInLoopThread())
+    {
+        wakeup();
+    }
+}
+
+线程类
+Thread
+
+线程类，核心函数start，信号量同步并调设置的EventLoopThread::threadFunc回调（见下）
+
+void Thread::start()                                                       
+{
+    started_ = true;
+    sem_t sem;
+    sem_init(&sem, false, 0);                                               // false指的是 不设置进程间共享
+    // 开启线程
+    thread_ = std::shared_ptr<std::thread>(new std::thread([&]() {
+        tid_ = CurrentThread::tid();                                        // 获取线程的tid值
+        sem_post(&sem);
+        func_();                                                            // 开启一个新线程 专门执行该线程函数
+    }));
+
+    // 这里必须等待获取上面新创建的线程的tid值
+    sem_wait(&sem);
+}
+EventLoopThread
+
+EventLoop和Thread的结合，因而有EventLoop、Thread的成员变量，也包括线程同步的互斥锁和条件变量
+
+class EventLoopThread : noncopyable
+{
+public:
+    using ThreadInitCallback = std::function<void(EventLoop *)>;
+
+    EventLoopThread(const ThreadInitCallback &cb = ThreadInitCallback(),
+                    const std::string &name = std::string());
+    ~EventLoopThread();
+
+    EventLoop *startLoop();
+
+private:
+    void threadFunc();
+
+    EventLoop *loop_;
+    bool exiting_;
+    Thread thread_;
+    std::mutex mutex_;             // 互斥锁
+    std::condition_variable cond_; // 条件变量
+};
+
+核心是startLoop和threadFunc，前者再EventLoopThreadPool::start中被创建EventLoopThread对象，并调用startLoop，启动线程并生成EventLoop对象
+
+EventLoop *EventLoopThread::startLoop()
+{
+    thread_.start(); // 启用底层线程Thread类对象thread_中通过start()创建的线程
+
+    EventLoop *loop = nullptr;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while(loop_ == nullptr)
+        {
+            cond_.wait(lock);
+        }
+        loop = loop_;
+    }
+    return loop;
+}
+
+后者会创建EventLoop，one loop per thread将给loop地址赋值给成员变量，并唤醒阻塞再startLoop中的循环，执行loop
+
+// 下面这个方法 是在单独的新线程里运行的
+void EventLoopThread::threadFunc()
+{
+    EventLoop loop; // 创建一个独立的EventLoop对象 和上面的线程是一一对应的 级one loop per thread
+
+    if (callback_)
+    {
+        callback_(&loop);//若设置初始化线程的回调则执行
+    }
+
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        loop_ = &loop;
+        cond_.notify_one();
+    }
+    loop.loop();    // 执行EventLoop的loop() 开启了底层的Poller的poll()
+    std::unique_lock<std::mutex> lock(mutex_);
+    loop_ = nullptr;
+}
+
+EventLoopThreadPool
+
+包含EventLoop和EventLoopThread的成员，核心是start，创建线程池，startLoop中调thread的start，并调用构造时传入的threadFunc，阻塞直到创建一个新EventLoop并解除阻塞
+
+void EventLoopThreadPool::start(const ThreadInitCallback &cb)
+{
+    started_ = true;
+
+    for(int i = 0; i < numThreads_; ++i)
+    {
+        char buf[name_.size() + 32];
+        snprintf(buf, sizeof buf, "%s%d", name_.c_str(), i);
+        EventLoopThread *t = new EventLoopThread(cb, buf);
+        threads_.push_back(std::unique_ptr<EventLoopThread>(t));//创建指定数量线程池，
+        loops_.push_back(t->startLoop());   // 底层创建线程 绑定一个新的EventLoop 并返回该loop的地址
+    }
+
+    if(numThreads_ == 0 && cb)  // 整个服务端只有一个线程运行baseLoop直接调用回调
+    {
+        cb(baseLoop_);
+    }
+}
+
+Acceptor
+
+包含EventLoop、Socket和Channel成员对象，handleRead监听套接字的可读事件，有新连接时回调设置的newConnection
+
+// listenfd有事件发生了，就是有新用户连接了
+void Acceptor::handleRead()
+{
+    InetAddress peerAddr;
+    int connfd = acceptSocket_.accept(&peerAddr);
+    if (connfd >= 0)
+    {
+        if (NewConnectionCallback_)//实际调用设置的newConnection回调
+        {   //会被设置为newConnection
+            NewConnectionCallback_(connfd, peerAddr); // 轮询找到subLoop 唤醒并分发当前的新客户端的Channel
+        }
+        else
+        {
+            ::close(connfd);
+        }
+    }
+    else
+    {
+        if (errno == EMFILE)//sockfd reached limit
+        {
+        }
+    }
+}
+
+TCP
+TcpConnection
+
+主要有Socket和Channel、EventLoop成员对象，因此也就有4种注册到Channel及5种上层回调函数，以及EventLoop相关函数
+
+class TcpConnection : noncopyable, public std::enable_shared_from_this<TcpConnection>
+{
+public:
+    TcpConnection(EventLoop *loop,
+                  const std::string &nameArg,
+                  int sockfd,//accept返回的已连接的文件描述符
+                  const InetAddress &localAddr,
+                  const InetAddress &peerAddr);
+    ~TcpConnection();
+
+    void handleRead(Timestamp receiveTime);
+    void handleWrite();
+    void handleClose();
+    void handleError();
+    
+    void sendInLoop(const void *data, size_t len);
+
+    EventLoop *loop_; // TcpServer中创建的线程数决定,若为多Reactor 指向subloop 若为单Reactor指向baseloop
+
+    // Socket Channel 这里和Acceptor类似    Acceptor => mainloop    TcpConnection => subloop
+    std::unique_ptr<Socket> socket_;
+    std::unique_ptr<Channel> channel_;
+
+    // 这些回调TcpServer也有 用户通过写入TcpServer注册 TcpServer再将注册的回调传递给TcpConnection TcpConnection再将回调注册到Channel中
+    ConnectionCallback connectionCallback_;       // 有新连接时的回调
+    MessageCallback messageCallback_;             // 有读写消息时的回调
+    WriteCompleteCallback writeCompleteCallback_; // 消息发送完成以后的回调
+    HighWaterMarkCallback highWaterMarkCallback_;
+    CloseCallback closeCallback_;
+};
+
+5种设置上层回调的回调函数，实际就是注册给eventLoop中的doPendingFunctors处理的上层回调函数。4种回调是注册给到Channel中的handleEvent处理channel对应的sockfd的读、写、关闭、错误4种回调
+
+// 读是相对服务器而言的 当对端客户端有数据到达 服务器端检测到EPOLLIN 就会触发该fd上的回调 handleRead取读走对端发来的数据
+void TcpConnection::handleRead(Timestamp receiveTime)
+{
+    int savedErrno = 0;
+    ssize_t n = inputBuffer_.readFd(channel_->fd(), &savedErrno);
+    if (n > 0) // 有数据到达
+    {
+        // 已建立连接的用户有可读事件发生了 调用用户传入的回调操作onMessage 
+        messageCallback_(shared_from_this(), &inputBuffer_, receiveTime);
+    }
+    else if (n == 0) // 客户端断开
+    {
+        handleClose();
+    }
+    else // 出错了
+    {
+        errno = savedErrno;
+        handleError();
+    }
+}
+
+void TcpConnection::handleWrite()
+{
+    if (channel_->isWriting())
+    {
+        int savedErrno = 0;
+        ssize_t n = outputBuffer_.writeFd(channel_->fd(), &savedErrno);//即使一次没写完，也会下次触发写
+        if (n > 0)
+        {
+            outputBuffer_.retrieve(n);
+            if (outputBuffer_.readableBytes() == 0)
+            {
+                channel_->disableWriting();
+                if (writeCompleteCallback_)
+                {
+                    // TcpConnection对象在其所在的subloop中 向pendingFunctors_中加入回调
+                    loop_->queueInLoop(
+                        std::bind(writeCompleteCallback_, shared_from_this()));
+                }
+                if (state_ == kDisconnecting)
+                {
+                    shutdownInLoop(); // 在当前所属的loop中把TcpConnection删除掉
+                }
+            }
+        }
+        else
+        {
+        }
+    }
+    else
+    {
+        LOG_ERROR("TcpConnection fd=%d is down, no more writing", channel_->fd());
+    }
+}
+
+void TcpConnection::handleClose()
+{
+    setState(kDisconnected);
+    channel_->disableAll();
+
+    TcpConnectionPtr connPtr(shared_from_this());
+    connectionCallback_(connPtr); // 执行连接关闭的回调
+    closeCallback_(connPtr);      // 执行关闭连接的回调 执行的是TcpServer::removeConnection回调方法 
+}
+
+void TcpConnection::handleError()
+{
+    int optval;
+    socklen_t optlen = sizeof optval;
+    int err = 0;
+    if (::getsockopt(channel_->fd(), SOL_SOCKET, SO_ERROR, &optval, &optlen) < 0)
+    {
+        err = errno;
+    }
+    else
+    {
+        err = optval;
+    }
+    LOG_ERROR("TcpConnection::handleError name:%s - SO_ERROR:%d\n", name_.c_str(), err);
+}
+
+sendInLoop是核心，若Channel第一次开始写数据或者缓冲区没有待发送数据，就写数据，若未出错且还剩余，就调用queueInLoop唤醒loop所在的线程执行handleWrite回调
+
+void TcpConnection::sendInLoop(const void *data, size_t len)
+{
+    ssize_t nwrote = 0;
+    size_t remaining = len;
+    bool faultError = false;
+
+    if (state_ == kDisconnected) // 之前调用过该connection的shutdown 不能再进行发送了
+    {
+        LOG_ERROR("disconnected, give up writing");
+    }
+
+    // 表示channel_第一次开始写数据或者缓冲区没有待发送数据
+    if (!channel_->isWriting() && outputBuffer_.readableBytes() == 0)
+    {
+        nwrote = ::write(channel_->fd(), data, len);
+        if (nwrote >= 0)
+        {
+            remaining = len - nwrote;
+            if (remaining == 0 && writeCompleteCallback_)
+            {
+                // 既然在这里数据全部发送完成，就不用再给channel设置epollout事件了
+                loop_->queueInLoop(
+                    std::bind(writeCompleteCallback_, shared_from_this()));
+            }
+        }
+        else // nwrote < 0
+        {
+            nwrote = 0;
+            if (errno != EWOULDBLOCK) // EWOULDBLOCK表示非阻塞情况下没有数据后的正常返回 等同于EAGAIN
+            {
+                LOG_ERROR("TcpConnection::sendInLoop");
+                if (errno == EPIPE || errno == ECONNRESET) // SIGPIPE RESET
+                {
+                    faultError = true;
+                }
+            }
+        }
+    }
+    /**
+     * 说明当前这一次write并没有把数据全部发送出去 剩余的数据需要保存到缓冲区当中，触发写事件
+     **/
+    if (!faultError && remaining > 0)
+    {
+        // 目前发送缓冲区剩余的待发送的数据的长度
+        size_t oldLen = outputBuffer_.readableBytes();
+        if (oldLen + remaining >= highWaterMark_ && oldLen < highWaterMark_ && highWaterMarkCallback_)
+        {
+            loop_->queueInLoop(
+                std::bind(highWaterMarkCallback_, shared_from_this(), oldLen + remaining));
+        }
+        outputBuffer_.append((char *)data + nwrote, remaining);
+        if (!channel_->isWriting())
+        {
+            channel_->enableWriting(); // 这里一定要注册channel的写事件 否则poller不会给channel通知epollout
+        }
+    }
+}
+
+TcpServer
+
+构造函数初始化主loop、ip端口、线程名、接收器、线程池、上层回调函数
+
+// 对外的服务器编程使用的类
+class TcpServer
+{
+public:
+    using ThreadInitCallback = std::function<void(EventLoop *)>;
+
+    TcpServer(EventLoop *loop,
+              const InetAddress &listenAddr,
+              const std::string &nameArg,
+              Option option = kNoReusePort);
+    ~TcpServer();
+
+    // 开启服务器监听
+    void start();
+
+private:
+    using ConnectionMap = std::unordered_map<std::string, TcpConnectionPtr>;
+
+    EventLoop *loop_; // baseloop 用户自定义的loop
+    const std::string ipPort_;
+    const std::string name_;
+
+    std::unique_ptr<Acceptor> acceptor_; // 运行在mainloop 任务就是监听新连接事件
+
+    std::shared_ptr<EventLoopThreadPool> threadPool_; // one loop per thread
+	//上层回调
+    ConnectionCallback connectionCallback_;       //有新连接时的回调
+    MessageCallback messageCallback_;             // 有读写事件发生时的回调
+    WriteCompleteCallback writeCompleteCallback_; // 消息发送完成后的回调
+
+    ThreadInitCallback threadInitCallback_; // loop线程初始化的回调
+
+    ConnectionMap connections_; // 保存所有的连接
+};
+
+当有新用户连接时，Acceptor类中绑定的acceptChannel有读事件发生，执行handleRead调用TcpServer.newConnection回调，负责将mainLoop接收到的请求连接通过回调轮询分发给subLoop去处理，上层回调会被传给TcpConnection对象
+
+// 有新连接，acceptor会执行，负责将mainLoop接收到的请求连接通过回调轮询分发给subLoop去处理
+void TcpServer::newConnection(int sockfd, const InetAddress &peerAddr)
+{
+    // 轮询算法 选择一个subLoop 来管理connfd对应的channel
+    EventLoop *ioLoop = threadPool_->getNextLoop();
+    char buf[64] = {0};
+    snprintf(buf, sizeof buf, "-%s#%d", ipPort_.c_str(), nextConnId_);
+    ++nextConnId_;  // 这里没有设置为原子类是因为其只在mainloop中执行 不涉及线程安全问题
+    std::string connName = name_ + buf;
+    
+    // 通过sockfd获取其绑定的本机的ip地址和端口信息
+    sockaddr_in local;
+    ::memset(&local, 0, sizeof(local));
+    socklen_t addrlen = sizeof(local);
+    if(::getsockname(sockfd, (sockaddr *)&local, &addrlen) < 0)
+    {
+        LOG_ERROR("sockets::getLocalAddr");
+    }
+
+    InetAddress localAddr(local);
+    TcpConnectionPtr conn(new TcpConnection(ioLoop,connName,sockfd,localAddr,peerAddr));
+    connections_[connName] = conn;
+    // 下面的回调都是用户设置给TcpServer => TcpConnection的，至于Channel绑定的则是TcpConnection设置的四个，handleRead,handleWrite... 这下面的回调用于handlexxx函数中
+    conn->setConnectionCallback(connectionCallback_);
+    conn->setMessageCallback(messageCallback_);
+    conn->setWriteCompleteCallback(writeCompleteCallback_);
+
+    // 设置了如何关闭连接的回调
+    conn->setCloseCallback(
+        std::bind(&TcpServer::removeConnection, this, std::placeholders::_1));
+
+    ioLoop->runInLoop(
+        std::bind(&TcpConnection::connectEstablished, conn));
+}
+
+核心是start，实际调用EventLoopThreadPool的start，函数中构造EventLoopThread对象，并在其构造函数绑定threadFunc，接着执行主loop的runInLoop函数
+
+// 开启服务器监听
 void TcpServer::start()
 {
-    if (started_++ == 0) //防止被多次启动
+    if (started_++ == 0)    // 防止一个TcpServer对象被start多次
     {
-        thread_pool_->start(thread_init_callback_);
-        loop_->run_in_loop(bind(&Acceptor::listen, acceptor_.get()));
+        threadPool_->start(threadInitCallback_);    // 启动底层的loop线程池
+        loop_->runInLoop(std::bind(&Acceptor::listen, acceptor_.get()));//主loop的runInLoop
     }
 }
-```
-看，它其实就是把EventLoopThreadPool给启动了，然后调用acceptor的listen方法，去监听连接而来的套接字。
 
-那么刚刚我们说的new_connection_callbak在哪儿，咋没看见？
+补充
+buffer类，使用readindex和writeindex记录读和写的位置，将缓存分成三部分，读开辟两块缓冲区，放不下则放入栈空间（尽快将内核数据挪到inputbuffer）；enable_shared_from_this帮助在类内拿到this的shared_ptr指针
 
-```cpp
-TcpServer::TcpServer(EventLoop *loop, const InetAddress &listenaddr, const string &name, Option option)
-    : loop_(CheckLoopNotNull(loop)), ip_port_(listenaddr.get_ip_port()), name_(name), acceptor_(new Acceptor(loop, listenaddr, option == k_reuse_port)), thread_pool_(new EventLoopThreadPool(loop, name_)), connection_callback_(), message_callback_(), next_conn_id_(1), started_(0)
-{
-    //当有新连接会执行new_connection
-    acceptor_->set_new_connection_callback(bind(&TcpServer::new_connection, this, _1, _2));
-}
-```
-其实啊，在构造函数中被绑定了TcpServer的new_connection方法，也就是说，acceptor监听到新用户连接的时候，其实是执行TcpServer的new_connection方法。
-那么这个方法又做了什么呢？
+image-20220801190134495
 
-```cpp
-//有一个新的客户端的连接，acceptor会执行这个回调
-void TcpServer::new_connection(int sockfd, const InetAddress &peeraddr)
-{
-    //轮询算法，选择一个subloop管理channel
-    EventLoop *ioloop = thread_pool_->get_nextEventLoop();
-
-    char buffer[BUFFER_SIZE64] = {0};
-    snprintf(buffer, sizeof(buffer), "-%s#%d", ip_port_.c_str(), next_conn_id_);
-    ++next_conn_id_;
-    string conn_name = name_ + buffer;
-
-    LOG_INFO("tcp server:: new connection[%s] - new connection[%s] from %s\n", name_.c_str(), conn_name.c_str(), peeraddr.get_ip_port().c_str());
-
-    //通过sockfd，获取其绑定的端口号和ip信息
-    sockaddr_in local;
-    bzero(&local, sizeof(local));
-    socklen_t addrlen = sizeof(local);
-    if (::getsockname(sockfd, (sockaddr *)&local, &addrlen) < 0)
-    {
-        LOG_ERROR("new connection get localaddr error\n");
-    }
-
-    InetAddress localaddr(local);
-
-    //根据连接成功的sockfd，创建tcpc连接对象
-    TcpConnectionPtr conn(new TcpConnection(ioloop, conn_name, sockfd, localaddr, peeraddr));
-
-    connections_[conn_name] = conn;
-
-    //下面回调是用户设置给tcpserver-》tcpconn-》channel-》poller-》notify channel
-    conn->set_connection_callback(connection_callback_);
-    conn->set_message_callback(message_callback_);
-    conn->set_write_complete_callback(write_complete_callback_);
-
-    //设置如何关闭连接的回调
-    conn->set_close_callback(bind(&TcpServer::remove_connection, this, _1));
-    ioloop->run_in_loop(bind(&TcpConnection::establish_connect, conn));
-}
-```
-去掉那些打印信息，我们总结一下：
-
-1. 轮询算法选择一个sub reactor
-2. 根据连接成功的sockfd，创建一个连接对象并加入到TcpServer的存储连接信息的map中
-3. 给这个连接设置回调
-4. 然后在main loop中执行estabilsh_connect
-
-那么这个setabilsh_connect又干了什么呢？
-
-这个我们就需要看TcpConnection这个类。稍后再说。
-
-刚刚只说了连接，那么断开连接又做了什么呢？
-
-还是在刚刚的代码中，设置了关闭连接的回调函数：
-
-```cpp
-    //设置如何关闭连接的回调
-    conn->set_close_callback(bind(&TcpServer::remove_connection, this, _1));
-```
-可以看到，调用的其实是TcpServer的remove_connection
-
-```cpp
-void TcpServer::remove_connection(const TcpConnectionPtr &conn)
-{
-    loop_->run_in_loop(bind(&TcpServer::remove_connection_inLoop, this, conn));
-}
-```
-可以看到，客户端的连接和关闭都是在main loop中执行的，只有读写事件是在sub loop中执行。而关闭连接的回调绕了一下，最终调用的是remove_connection_inloop
-
-```cpp
-void TcpServer::remove_connection_inLoop(const TcpConnectionPtr &conn)
-{
-    LOG_INFO("tcp server::remove connection in loop[%s]-connecion[%s]\n", name_.c_str(), conn->get_name().c_str());
-
-    connections_.erase(conn->get_name());
-    EventLoop *ioloop = conn->get_loop();
-    ioloop->queue_in_loop(bind(&TcpConnection::destory_connect, conn));
-}
-```
-它就做了两件事：
-
-1. 删除连接map中的信息
-2. 执行TcpConnection中的destory_connect函数
-
-好了，还是TcpConnection这个类。
-
-### TcpConnection
-```cpp
-数据：
-   	EventLoop *loop_; //所属subloop，非baseloop
-    const string name_;
-    atomic_int state_;
-    bool reading_;
-    unique_ptr<Socket> socket_;
-    unique_ptr<Channel> channel_;
-    const InetAddress localaddr_;
-    const InetAddress peeraddr_;
-    ConnectionCallback connection_callback_;        //有新连接时回调
-    MessageCallback message_callback_;              //有读写消息的回调
-    WriteCompleteCallback write_complete_callback_; //消息发送完以后的回调
-    CloseCallback close_callback_;
-    HighWaterMarkCallback highwater_callback_;
-    size_t highwater_mark_; //高水位标志
-    Buffer input_buffer_;  //接收数据的缓冲区
-    Buffer output_buffer_; //发送数据的缓冲区
-```
-
- 可以看到，其实它也是一个包装，将底层的包装，然后给用户去使用。
- 
-
-```cpp
-方法：
-    EventLoop *get_loop() const { return loop_; }
-    const string &get_name() const { return name_; }
-    const InetAddress &get_localaddr() const { return localaddr_; }
-    const InetAddress &get_peeraddr() const { return peeraddr_; }
-    bool connected() { return state_ == k_connected; }
-    void set_state(StateE state) { state_ = state; }
-    
-    //发送数据
-    void send(const string& buf);
-    //断开连接
-    void shutdown();
-    //建立连接
-    void establish_connect();
-    //销毁连接
-    void destory_connect();
-
-    //设置回调
-	.......
-private:
-    void handle_read(TimeStamp receive_time);
-    void handle_write();
-    void handle_close();
-    void handle_error();
-
-    void send_inLoop(const string& buf);
-    //void shutdown();
-    void shutdown_inLoop();
-```
-其实重要的就是shutdown，establish_connect、destory_connect三个函数
-
-```cpp
-//断开连接
-void TcpConnection::shutdown()
-{
-    if (state_ == k_connected)
-    {
-        set_state(k_disconnecting);
-        loop_->run_in_loop(bind(&TcpConnection::shutdown_inLoop, this));
-    }
-}
-void TcpConnection::shutdown_inLoop()
-{
-    //当前outputbuffer 中数据 全部发送完
-    if (!channel_->is_writting())
-    {
-        socket_->shutdown_write(); //关闭写端      后续调用handle close
-    }
-}
-```
-也是做了两件事：
-1. 设置此连接为关闭状态
-2. 关闭底层套接字的写端
-
-```cpp
-//建立连接
-void TcpConnection::establish_connect()
-{
-    set_state(k_connected);
-    channel_->tie(shared_from_this());
-    channel_->enable_reading(); //向poller注册channel的epollin事件
-
-    //新连接建立
-    connection_callback_(shared_from_this());
-}
-```
-这个则是在底层把这个信息设置成对读事件感兴趣，然后调用用户给它传入的回调函数。
-
-```cpp
-/销毁连接
-void TcpConnection::destory_connect()
-{
-    if (state_ == k_connected)
-    {
-        set_state(k_disconnected);
-        channel_->dis_enable_all(); //把channel所有感兴趣的事件，从poller中delete
-    }
-    channel_->remove(); //从poller中删除掉
-}
-```
-这个也是，向底层的Polller删除掉
 
 # 总结
 1. 用户创建一个main loop，主线程作为main reactor
