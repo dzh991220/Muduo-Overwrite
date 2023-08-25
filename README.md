@@ -84,7 +84,9 @@ public:
     EventCallback errorCallback_;
 };
 ···
+
 如上所述故引申出事件回调和设置事件状态函数，4种事件对应4回调函数，经handleEvent调handleEventWithGuard被调用，判断4种不同事件类型调用不同事件回调函数，设置事件状态函数通过loop调用EPollPoller的Channel操作函数，本质是调用epoll_ctl
+
 ···
 void Channel::handleEvent(Timestamp receiveTime)
 {
@@ -139,9 +141,11 @@ void Channel::handleEventWithGuard(Timestamp receiveTime)
     }
 }
 ···
+
 Poller和EPollPoller
 
 Poller类是虚基类，提供IO复用统一接口：poll、updateChannel、removeChannel。定义ChannelMap和EventLoop类对象
+
 ···
 // muduo库中多路事件分发器的核心IO复用模块
 class Poller
@@ -156,7 +160,6 @@ public:
     virtual Timestamp poll(int timeoutMs, ChannelList *activeChannels) = 0;
     virtual void updateChannel(Channel *channel) = 0;
     virtual void removeChannel(Channel *channel) = 0;
-......
 protected:
     // map的key:sockfd value:sockfd所属的channel通道类型
     using ChannelMap = std::unordered_map<int, Channel *>;
@@ -165,7 +168,9 @@ private:
     EventLoop *ownerLoop_; // 定义Poller所属的事件循环EventLoop
 };
 ···
+
 EPollPoller先重写Poller的接口，定义epollfd和EventList成员，表示监听fd和存放epoll_wait返回的事件的fd集合。
+
 ···
 class EPollPoller : public Poller
 {
@@ -176,11 +181,9 @@ public:
     // 重写基类Poller的抽象方法
     Timestamp poll(int timeoutMs, ChannelList *activeChannels) override;
     void updateChannel(Channel *channel) override;
-    void removeChannel(Channel *channel) override;
-
+    void removeChannel(Channel *channel) override；
 private:
     static const int kInitEventListSize = 16;
-......
     using EventList = std::vector<epoll_event>; // C++中可以省略struct 直接写epoll_event即可
     int epollfd_;      // 监听fd，epoll_create创建返回的fd保存在epollfd_中
     EventList events_; // 用于存放epoll_wait返回的所有发生的事件的文件描述符事件集
@@ -188,6 +191,7 @@ private:
 ···
 
 poll调epoll_wait，将发生事件文件描述符集合写入EventList，并将发生事件的Channel压入ChannelList对象
+
 ···
 Timestamp EPollPoller::poll(int timeoutMs, ChannelList *activeChannels)
 {
@@ -226,11 +230,12 @@ void EPollPoller::fillActiveChannels(int numEvents, ChannelList *activeChannels)
     }
 }
 ···
+
 updateChannel经Channel对象调EventLoop对象成员函数被调用，最终调epoll_ctl
 
 removeChannel类似updateChannel，但会将传入参数channel从ChannelMap成员对象中删除
-EventLoop
 
+EventLoop
 事件循环可理解为Reactor，一Reactor可处理多sockfd，故一EventLoop对应多Channel，但多Channel不能对应同EventLoop。EventLoop是Channel和Poller的桥梁，因此成员变量包括Channel和Poller对象，及存储上层回调的队列，从而引申出wakeup和handleRead，doPendingFunctors、runInLoop和queueInLoop函数
 
 相关函数时序：
@@ -238,6 +243,7 @@ EventLoop
 runInLoop->queueInLoop->wakeup->poll->handleRead->doPendingFunctors
 
 主loop收到事件，若不在主线程，则调runInLoop，调用queueInLoop，若再主线程直接调cb，否则将回调给子loop（该回调需子loop执行 但它阻塞在poll处） queueInLoop调wakeup写数据，系统检测到写事件，下次解除epoll_wait的阻塞，完成主从通信。
+
 ···
 // 在当前loop中执行cb
 void EventLoop::runInLoop(Functor cb)
@@ -254,6 +260,7 @@ void EventLoop::runInLoop(Functor cb)
 ···
 
 queueInLoop将回调添加到队列，同时通过wakeup唤醒poll调用队列内的回调
+
 ···
 // 把cb放入队列中 唤醒loop所在的线程执行cb
 void EventLoop::queueInLoop(Functor cb)
@@ -269,7 +276,9 @@ void EventLoop::queueInLoop(Functor cb)
     }
 }
 ···
+
 wakeup巧妙，构造函数调eventfd创建可用于等待唤醒的eventfd对象wakeupFd_，每当多Reactor模型时（单Reactor模型直接调cb），将上层回调放入队列时，判断是否非当前EventLoop或当前loop正在执行回调，调wakup唤醒loop所在子线程
+
 ···
 // 用来唤醒loop所在线程 向wakeupFd_写一个数据 wakeupChannel就发生读事件 当前loop线程就会被唤醒
 void EventLoop::wakeup()
@@ -282,7 +291,9 @@ void EventLoop::wakeup()
     }
 }
 ···
+
 handleRead，当wakeup被调用，则wakeupFd_有写数据，此时该回调被调用，下次epoll_wait则检测到事件解除阻塞
+
 ···
 void EventLoop::handleRead()
 {
@@ -294,7 +305,9 @@ void EventLoop::handleRead()
     }
 }
 ···
+
 doPendingFunctors也巧妙，处理挂起事件，先交换后遍历执行 functor，既减少锁的临界区范围又避免死锁（执行functor再临界区时若functor中调用queueInLoop会死锁）
+
 ···
 void EventLoop::doPendingFunctors()
 {
@@ -313,7 +326,9 @@ void EventLoop::doPendingFunctors()
     callingPendingFunctors_ = false;
 }
 ···
+
 注意quit中设quit_为true要wakeup，因退出循环时，可能阻塞再epoll_wait处，需被唤醒，并执行完剩余回调，下次再退出循环
+
 ···
 /**
  * 1. 如果loop在自己的线程中调用quit成功了 说明当前线程已经执行完毕了loop()函数的poller_->poll并退出
@@ -333,11 +348,14 @@ void EventLoop::quit()
         wakeup();
     }
 }
+
 ···
+
 线程类
 Thread
 
 线程类，核心函数start，信号量同步并调设置的EventLoopThread::threadFunc回调（见下）
+
 ···
 void Thread::start()                                                       
 {
@@ -355,9 +373,11 @@ void Thread::start()
     sem_wait(&sem);
 }
 ···
+
 EventLoopThread
 
 EventLoop和Thread的结合，因而有EventLoop、Thread的成员变量，也包括线程同步的互斥锁和条件变量
+
 ···
 class EventLoopThread : noncopyable
 {
@@ -380,7 +400,9 @@ private:
     std::condition_variable cond_; // 条件变量
 };
 ···
+
 核心是startLoop和threadFunc，前者再EventLoopThreadPool::start中被创建EventLoopThread对象，并调用startLoop，启动线程并生成EventLoop对象
+
 ···
 EventLoop *EventLoopThread::startLoop()
 {
@@ -398,7 +420,9 @@ EventLoop *EventLoopThread::startLoop()
     return loop;
 }
 ···
+
 后者会创建EventLoop，one loop per thread将给loop地址赋值给成员变量，并唤醒阻塞再startLoop中的循环，执行loop
+
 ···
 // 下面这个方法 是在单独的新线程里运行的
 void EventLoopThread::threadFunc()
@@ -420,9 +444,11 @@ void EventLoopThread::threadFunc()
     loop_ = nullptr;
 }
 ···
+
 EventLoopThreadPool
 
 包含EventLoop和EventLoopThread的成员，核心是start，创建线程池，startLoop中调thread的start，并调用构造时传入的threadFunc，阻塞直到创建一个新EventLoop并解除阻塞
+
 ···
 void EventLoopThreadPool::start(const ThreadInitCallback &cb)
 {
@@ -442,10 +468,13 @@ void EventLoopThreadPool::start(const ThreadInitCallback &cb)
         cb(baseLoop_);
     }
 }
+
 ···
+
 Acceptor
 
 包含EventLoop、Socket和Channel成员对象，handleRead监听套接字的可读事件，有新连接时回调设置的newConnection
+
 ···
 // listenfd有事件发生了，就是有新用户连接了
 void Acceptor::handleRead()
@@ -471,10 +500,12 @@ void Acceptor::handleRead()
     }
 }
 ···
+
 TCP
 TcpConnection
 
 主要有Socket和Channel、EventLoop成员对象，因此也就有4种注册到Channel及5种上层回调函数，以及EventLoop相关函数
+
 ···
 class TcpConnection : noncopyable, public std::enable_shared_from_this<TcpConnection>
 {
@@ -507,7 +538,9 @@ public:
     CloseCallback closeCallback_;
 };
 ···
+
 5种设置上层回调的回调函数，实际就是注册给eventLoop中的doPendingFunctors处理的上层回调函数。4种回调是注册给到Channel中的handleEvent处理channel对应的sockfd的读、写、关闭、错误4种回调
+
 ···
 // 读是相对服务器而言的 当对端客户端有数据到达 服务器端检测到EPOLLIN 就会触发该fd上的回调 handleRead取读走对端发来的数据
 void TcpConnection::handleRead(Timestamp receiveTime)
@@ -590,7 +623,9 @@ void TcpConnection::handleError()
     LOG_ERROR("TcpConnection::handleError name:%s - SO_ERROR:%d\n", name_.c_str(), err);
 }
 ···
+
 sendInLoop是核心，若Channel第一次开始写数据或者缓冲区没有待发送数据，就写数据，若未出错且还剩余，就调用queueInLoop唤醒loop所在的线程执行handleWrite回调
+
 ···
 void TcpConnection::sendInLoop(const void *data, size_t len)
 {
@@ -650,9 +685,11 @@ void TcpConnection::sendInLoop(const void *data, size_t len)
     }
 }
 ···
+
 TcpServer
 
 构造函数初始化主loop、ip端口、线程名、接收器、线程池、上层回调函数
+
 ···
 // 对外的服务器编程使用的类
 class TcpServer
@@ -689,7 +726,9 @@ private:
     ConnectionMap connections_; // 保存所有的连接
 };
 ···
+
 当有新用户连接时，Acceptor类中绑定的acceptChannel有读事件发生，执行handleRead调用TcpServer.newConnection回调，负责将mainLoop接收到的请求连接通过回调轮询分发给subLoop去处理，上层回调会被传给TcpConnection对象
+
 ···
 // 有新连接，acceptor会执行，负责将mainLoop接收到的请求连接通过回调轮询分发给subLoop去处理
 void TcpServer::newConnection(int sockfd, const InetAddress &peerAddr)
@@ -726,7 +765,9 @@ void TcpServer::newConnection(int sockfd, const InetAddress &peerAddr)
         std::bind(&TcpConnection::connectEstablished, conn));
 }
 ···
+
 核心是start，实际调用EventLoopThreadPool的start，函数中构造EventLoopThread对象，并在其构造函数绑定threadFunc，接着执行主loop的runInLoop函数
+
 ···
 // 开启服务器监听
 void TcpServer::start()
@@ -738,6 +779,7 @@ void TcpServer::start()
     }
 }
 ···
+
 补充
 buffer类，使用readindex和writeindex记录读和写的位置，将缓存分成三部分，读开辟两块缓冲区，放不下则放入栈空间（尽快将内核数据挪到inputbuffer）；enable_shared_from_this帮助在类内拿到this的shared_ptr指针
 
