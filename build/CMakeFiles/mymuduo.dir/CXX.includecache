@@ -1,0 +1,36 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/home/vergil/muduo/Logger.cc
+Logger.h
+/home/vergil/muduo/Logger.h
+Timestamp.h
+/home/vergil/muduo/Timestamp.h
+iostream
+-
+
+/home/vergil/muduo/Logger.h
+string
+-
+noncopyable.h
+/home/vergil/muduo/noncopyable.h
+
+/home/vergil/muduo/Timestamp.cc
+Timestamp.h
+/home/vergil/muduo/Timestamp.h
+time.h
+-
+
+/home/vergil/muduo/Timestamp.h
+iostream
+-
+string
+-
+
+/home/vergil/muduo/noncopyable.h
+

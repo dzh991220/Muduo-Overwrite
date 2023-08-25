@@ -1,0 +1,87 @@
+[
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/Acceptor.o -c /home/vergil/muduo/Acceptor.cc",
+  "file": "/home/vergil/muduo/Acceptor.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/Buffer.o -c /home/vergil/muduo/Buffer.cc",
+  "file": "/home/vergil/muduo/Buffer.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/Channel.o -c /home/vergil/muduo/Channel.cc",
+  "file": "/home/vergil/muduo/Channel.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/CurrentThread.o -c /home/vergil/muduo/CurrentThread.cc",
+  "file": "/home/vergil/muduo/CurrentThread.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/DefaultPoller.o -c /home/vergil/muduo/DefaultPoller.cc",
+  "file": "/home/vergil/muduo/DefaultPoller.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/EPollPoller.o -c /home/vergil/muduo/EPollPoller.cc",
+  "file": "/home/vergil/muduo/EPollPoller.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/EventLoop.o -c /home/vergil/muduo/EventLoop.cc",
+  "file": "/home/vergil/muduo/EventLoop.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/EventLoopThread.o -c /home/vergil/muduo/EventLoopThread.cc",
+  "file": "/home/vergil/muduo/EventLoopThread.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/EventLoopThreadPool.o -c /home/vergil/muduo/EventLoopThreadPool.cc",
+  "file": "/home/vergil/muduo/EventLoopThreadPool.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/InetAddress.o -c /home/vergil/muduo/InetAddress.cc",
+  "file": "/home/vergil/muduo/InetAddress.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/Logger.o -c /home/vergil/muduo/Logger.cc",
+  "file": "/home/vergil/muduo/Logger.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/Poller.o -c /home/vergil/muduo/Poller.cc",
+  "file": "/home/vergil/muduo/Poller.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/Socket.o -c /home/vergil/muduo/Socket.cc",
+  "file": "/home/vergil/muduo/Socket.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/TcpConnection.o -c /home/vergil/muduo/TcpConnection.cc",
+  "file": "/home/vergil/muduo/TcpConnection.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/TcpServer.o -c /home/vergil/muduo/TcpServer.cc",
+  "file": "/home/vergil/muduo/TcpServer.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/Thread.o -c /home/vergil/muduo/Thread.cc",
+  "file": "/home/vergil/muduo/Thread.cc"
+},
+{
+  "directory": "/home/vergil/muduo/build",
+  "command": "/usr/bin/g++  -Dmymuduo_EXPORTS   -g -std=c++11 -fPIC -g -fPIC   -o CMakeFiles/mymuduo.dir/Timestamp.o -c /home/vergil/muduo/Timestamp.cc",
+  "file": "/home/vergil/muduo/Timestamp.cc"
+}
+]
