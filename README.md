@@ -36,8 +36,8 @@ reactor模型在实际设计中大致是有以下几个部分：
 -	当demultiplex检测到connfd上有事件发生，就会返回相应事件
 -	reactor根据事件去调用eventhandler处理程序 
 
-https://img-blog.csdnimg.cn/img_convert/38fe83adae399190d519bb7f45faf7cd.jpeg
-https://img-blog.csdnimg.cn/img_convert/d7eb66b9c257a8dc6656736476fcb53a.png
+![图片](https://github.com/dzh991220/Muduo-Overwrite/assets/92438691/309ca08d-75d5-4136-adc0-4fb79ef58dd2)
+![图片](https://github.com/dzh991220/Muduo-Overwrite/assets/92438691/a3708ba5-ac5c-48c9-a725-5208b3b03f1d)
 
 而上述的，是在一个reactor反应堆中所执行的大致流程，其在muduo代码中**包含关系**如下（椭圆圈起来的是类）：
 
